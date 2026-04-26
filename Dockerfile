@@ -12,7 +12,7 @@ RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
  && cmake --build build --parallel \
  && ctest --test-dir build --output-on-failure
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
