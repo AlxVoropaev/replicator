@@ -17,11 +17,15 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic -O3)
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 add_library(replicator_core
     src/bf.cpp
     src/soup.cpp
 )
 target_include_directories(replicator_core PUBLIC src)
+target_link_libraries(replicator_core PUBLIC Threads::Threads)
 
 add_executable(replicator src/main.cpp)
 target_link_libraries(replicator PRIVATE replicator_core)
