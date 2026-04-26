@@ -33,29 +33,33 @@ std::pair<std::size_t, std::size_t> Soup::pick_pair() {
     return {i, j};
 }
 
-void Soup::step(std::size_t max_ops) {
+bool Soup::step(std::size_t max_ops) {
     auto [i, j] = pick_pair();
     std::vector<std::uint8_t> tape(2 * tape_size_);
     std::copy(cells_[i].begin(), cells_[i].end(), tape.begin());
     std::copy(cells_[j].begin(), cells_[j].end(), tape.begin() + tape_size_);
-    run_bf(std::span<std::uint8_t>(tape), max_ops);
+    const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
     std::copy(tape.begin(), tape.begin() + tape_size_, cells_[i].begin());
     std::copy(tape.begin() + tape_size_, tape.end(), cells_[j].begin());
+    return ops < max_ops;
 }
 
-void Soup::run(std::size_t n_steps, std::size_t max_ops) {
-    for (std::size_t k = 0; k < n_steps; ++k) step(max_ops);
+std::size_t Soup::run(std::size_t n_steps, std::size_t max_ops) {
+    std::size_t ok = 0;
+    for (std::size_t k = 0; k < n_steps; ++k) ok += step(max_ops) ? 1 : 0;
+    return ok;
 }
 
-void Soup::run_parallel(std::size_t n_steps,
-                        std::size_t max_ops,
-                        std::size_t n_threads,
-                        const std::atomic<bool>& stop) {
+std::size_t Soup::run_parallel(std::size_t n_steps,
+                               std::size_t max_ops,
+                               std::size_t n_threads,
+                               const std::atomic<bool>& stop) {
     if (n_threads <= 1) {
+        std::size_t ok = 0;
         for (std::size_t k = 0; k < n_steps && !stop.load(std::memory_order_relaxed); ++k) {
-            step(max_ops);
+            ok += step(max_ops) ? 1 : 0;
         }
-        return;
+        return ok;
     }
 
     const std::size_t pop = cells_.size();
@@ -63,6 +67,7 @@ void Soup::run_parallel(std::size_t n_steps,
     for (auto& b : busy) b.store(0, std::memory_order_relaxed);
 
     std::atomic<std::size_t> done{0};
+    std::atomic<std::size_t> ok_runs{0};
 
     std::vector<std::uint64_t> seeds(n_threads);
     for (auto& s : seeds) s = rng_();
@@ -72,6 +77,7 @@ void Soup::run_parallel(std::size_t n_steps,
         std::uniform_int_distribution<std::size_t> d(0, pop - 1);
         std::uniform_int_distribution<std::size_t> d2(0, pop - 2);
         std::vector<std::uint8_t> tape(2 * tape_size_);
+        std::size_t local_ok = 0;
 
         while (!stop.load(std::memory_order_relaxed)) {
             const std::size_t cur = done.fetch_add(1, std::memory_order_relaxed);
@@ -100,21 +106,24 @@ void Soup::run_parallel(std::size_t n_steps,
 
                 std::copy(cells_[i].begin(), cells_[i].end(), tape.begin());
                 std::copy(cells_[j].begin(), cells_[j].end(), tape.begin() + tape_size_);
-                run_bf(std::span<std::uint8_t>(tape), max_ops);
+                const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
                 std::copy(tape.begin(), tape.begin() + tape_size_, cells_[i].begin());
                 std::copy(tape.begin() + tape_size_, tape.end(), cells_[j].begin());
+                if (ops < max_ops) ++local_ok;
 
                 busy[hi].store(0, std::memory_order_release);
                 busy[lo].store(0, std::memory_order_release);
                 break;
             }
         }
+        ok_runs.fetch_add(local_ok, std::memory_order_relaxed);
     };
 
     std::vector<std::thread> ts;
     ts.reserve(n_threads);
     for (std::size_t t = 0; t < n_threads; ++t) ts.emplace_back(worker, seeds[t]);
     for (auto& th : ts) th.join();
+    return ok_runs.load(std::memory_order_relaxed);
 }
 
 } // namespace replicator

@@ -182,13 +182,21 @@ Stats compute_stats(const std::vector<std::vector<std::uint8_t>>& cells,
     return st;
 }
 
-void print_report(std::size_t step, const Stats& st, double steps_per_sec) {
-    std::printf("\n=== step %zu  (unique=%zu  H=%.3f bits  speed=%.0f steps/s) ===\n",
-                step, st.unique, st.entropy_bits, steps_per_sec);
+void print_report(std::size_t step,
+                  const Stats& st,
+                  double steps_per_sec,
+                  std::size_t ok_runs,
+                  std::size_t total_runs,
+                  const std::vector<std::uint8_t>& cell0) {
+    std::printf("\n=== step %zu  (unique=%zu  H=%.3f bits  speed=%.0f steps/s  done=%zu/%zu) ===\n",
+                step, st.unique, st.entropy_bits, steps_per_sec, ok_runs, total_runs);
     for (std::size_t i = 0; i < st.top.size(); ++i) {
         const auto& [cnt, bytes] = st.top[i];
         if (i > 0 && cnt < 2) break; // always show #1; skip the rest if singletons
         std::printf("  %2zu) x%-4zu  %s\n", i + 1, cnt, bf_text_of(bytes).c_str());
+    }
+    if (!st.top.empty() && st.top.front().first == 1) {
+        std::printf("  c0) x1     %s\n", bf_text_of(cell0).c_str());
     }
     std::fflush(stdout);
 }
@@ -215,13 +223,13 @@ int main(int argc, char** argv) {
 
     while (!g_stop.load()) {
         auto t_run0 = std::chrono::steady_clock::now();
-        soup.run_parallel(cfg.report_every, cfg.max_ops, cfg.threads, g_stop);
+        const std::size_t ok = soup.run_parallel(cfg.report_every, cfg.max_ops, cfg.threads, g_stop);
         auto t_run1 = std::chrono::steady_clock::now();
         step += cfg.report_every;
         double dt = std::chrono::duration<double>(t_run1 - t_run0).count();
         double sps = dt > 0 ? static_cast<double>(cfg.report_every) / dt : 0.0;
         auto st = compute_stats(soup.cells(), cfg.top_n, cfg.threads);
-        print_report(step, st, sps);
+        print_report(step, st, sps, ok, cfg.report_every, soup.cell(0));
     }
 
     std::printf("\nstopped after %zu steps\n", step);

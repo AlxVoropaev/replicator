@@ -22,20 +22,23 @@ public:
     std::pair<std::size_t, std::size_t> pick_pair();
 
     // One simulation step: pick pair, concat, run, split back.
-    void step(std::size_t max_ops);
+    // Returns true if the BF program halted naturally (ops < max_ops).
+    bool step(std::size_t max_ops);
 
     // Run N steps single-threaded; deterministic for a given seed.
-    void run(std::size_t n_steps, std::size_t max_ops);
+    // Returns count of runs that halted naturally.
+    std::size_t run(std::size_t n_steps, std::size_t max_ops);
 
     // Run N steps across `n_threads` workers. Each worker has its own RNG
     // seeded from the soup's RNG (so RNG state is consumed deterministically
     // at construction, but step ordering is not deterministic). Cells are
     // claimed atomically; concurrent threads never operate on the same cell.
     // Stops early if `stop` becomes true. n_threads <= 1 falls back to run().
-    void run_parallel(std::size_t n_steps,
-                      std::size_t max_ops,
-                      std::size_t n_threads,
-                      const std::atomic<bool>& stop);
+    // Returns count of runs that halted naturally.
+    std::size_t run_parallel(std::size_t n_steps,
+                             std::size_t max_ops,
+                             std::size_t n_threads,
+                             const std::atomic<bool>& stop);
 
     // Snapshot copies of all cells.
     std::vector<std::vector<std::uint8_t>> snapshot() const { return cells_; }
