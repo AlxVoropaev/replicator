@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <span>
 #include <vector>
 #include <utility>
 
@@ -12,11 +13,16 @@ class Soup {
 public:
     Soup(std::size_t population, std::size_t tape_size, std::uint64_t seed);
 
-    std::size_t population() const { return cells_.size(); }
+    std::size_t population() const { return population_; }
     std::size_t tape_size() const { return tape_size_; }
 
-    const std::vector<std::uint8_t>& cell(std::size_t i) const { return cells_[i]; }
-    const std::vector<std::vector<std::uint8_t>>& cells() const { return cells_; }
+    // Cells live in one contiguous buffer (population * tape_size bytes) for
+    // cache locality. cell(i) returns a view; bytes_data() exposes the whole
+    // buffer for callers that want to iterate it in one sweep.
+    std::span<const std::uint8_t> cell(std::size_t i) const {
+        return {bytes_.data() + i * tape_size_, tape_size_};
+    }
+    const std::uint8_t* bytes_data() const { return bytes_.data(); }
 
     // Pick two distinct uniform indices.
     std::pair<std::size_t, std::size_t> pick_pair();
@@ -40,12 +46,20 @@ public:
                              std::size_t n_threads,
                              const std::atomic<bool>& stop);
 
-    // Snapshot copies of all cells.
-    std::vector<std::vector<std::uint8_t>> snapshot() const { return cells_; }
+    // Snapshot copies of all cells (used by tests for equality comparisons).
+    std::vector<std::vector<std::uint8_t>> snapshot() const {
+        std::vector<std::vector<std::uint8_t>> out(population_);
+        for (std::size_t i = 0; i < population_; ++i) {
+            const auto* p = bytes_.data() + i * tape_size_;
+            out[i].assign(p, p + tape_size_);
+        }
+        return out;
+    }
 
 private:
+    std::size_t population_;
     std::size_t tape_size_;
-    std::vector<std::vector<std::uint8_t>> cells_;
+    std::vector<std::uint8_t> bytes_; // population_ * tape_size_ bytes, row-major
     std::mt19937_64 rng_;
 };
 

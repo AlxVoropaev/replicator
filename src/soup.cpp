@@ -1,13 +1,15 @@
 #include "soup.hpp"
 #include "bf.hpp"
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <thread>
 
 namespace replicator {
 
 Soup::Soup(std::size_t population, std::size_t tape_size, std::uint64_t seed)
-    : tape_size_(tape_size), cells_(population), rng_(seed) {
+    : population_(population), tape_size_(tape_size),
+      bytes_(population * tape_size), rng_(seed) {
     if (population < 2) {
         throw std::invalid_argument("population must be >= 2");
     }
@@ -16,18 +18,14 @@ Soup::Soup(std::size_t population, std::size_t tape_size, std::uint64_t seed)
     }
     static constexpr std::uint8_t bf_alphabet[] = {'+', '-', '>', '<', '[', ']', '.', ','};
     std::uniform_int_distribution<int> sym_dist(0, sizeof(bf_alphabet) - 1);
-    for (auto& c : cells_) {
-        c.resize(tape_size);
-        for (auto& b : c) b = bf_alphabet[sym_dist(rng_)];
-    }
+    for (auto& b : bytes_) b = bf_alphabet[sym_dist(rng_)];
 }
 
 std::pair<std::size_t, std::size_t> Soup::pick_pair() {
-    const std::size_t n = cells_.size();
-    std::uniform_int_distribution<std::size_t> d(0, n - 1);
+    std::uniform_int_distribution<std::size_t> d(0, population_ - 1);
     const std::size_t i = d(rng_);
     // pick j uniformly from the remaining n-1 indices
-    std::uniform_int_distribution<std::size_t> d2(0, n - 2);
+    std::uniform_int_distribution<std::size_t> d2(0, population_ - 2);
     std::size_t j = d2(rng_);
     if (j >= i) ++j;
     return {i, j};
@@ -39,11 +37,12 @@ bool Soup::step(std::size_t max_ops) {
     // allocations/sec at the previous hot path.
     thread_local std::vector<std::uint8_t> tape;
     tape.resize(2 * tape_size_);
-    std::copy(cells_[i].begin(), cells_[i].end(), tape.begin());
-    std::copy(cells_[j].begin(), cells_[j].end(), tape.begin() + tape_size_);
+    std::uint8_t* base = bytes_.data();
+    std::memcpy(tape.data(),                base + i * tape_size_, tape_size_);
+    std::memcpy(tape.data() + tape_size_,   base + j * tape_size_, tape_size_);
     const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
-    std::copy(tape.begin(), tape.begin() + tape_size_, cells_[i].begin());
-    std::copy(tape.begin() + tape_size_, tape.end(), cells_[j].begin());
+    std::memcpy(base + i * tape_size_, tape.data(),              tape_size_);
+    std::memcpy(base + j * tape_size_, tape.data() + tape_size_, tape_size_);
     return ops < max_ops;
 }
 
@@ -65,7 +64,7 @@ std::size_t Soup::run_parallel(std::size_t n_steps,
         return ok;
     }
 
-    const std::size_t pop = cells_.size();
+    const std::size_t pop = population_;
     std::vector<std::atomic<std::uint8_t>> busy(pop);
     for (auto& b : busy) b.store(0, std::memory_order_relaxed);
 
@@ -79,12 +78,14 @@ std::size_t Soup::run_parallel(std::size_t n_steps,
     // across many steps. Without this, every step takes a global atomic and
     // multi-thread scaling stalls well below the available cores.
     constexpr std::size_t kBatch = 1024;
+    std::uint8_t* const base = bytes_.data();
+    const std::size_t ts_local = tape_size_;
 
     auto worker = [&](std::uint64_t seed) {
         std::mt19937_64 rng(seed);
         std::uniform_int_distribution<std::size_t> d(0, pop - 1);
         std::uniform_int_distribution<std::size_t> d2(0, pop - 2);
-        std::vector<std::uint8_t> tape(2 * tape_size_);
+        std::vector<std::uint8_t> tape(2 * ts_local);
         std::size_t local_ok = 0;
         std::size_t batch_left = 0;
 
@@ -117,11 +118,11 @@ std::size_t Soup::run_parallel(std::size_t n_steps,
                     continue;
                 }
 
-                std::copy(cells_[i].begin(), cells_[i].end(), tape.begin());
-                std::copy(cells_[j].begin(), cells_[j].end(), tape.begin() + tape_size_);
+                std::memcpy(tape.data(),             base + i * ts_local, ts_local);
+                std::memcpy(tape.data() + ts_local,  base + j * ts_local, ts_local);
                 const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
-                std::copy(tape.begin(), tape.begin() + tape_size_, cells_[i].begin());
-                std::copy(tape.begin() + tape_size_, tape.end(), cells_[j].begin());
+                std::memcpy(base + i * ts_local, tape.data(),            ts_local);
+                std::memcpy(base + j * ts_local, tape.data() + ts_local, ts_local);
                 if (ops < max_ops) ++local_ok;
 
                 busy[hi].store(0, std::memory_order_release);

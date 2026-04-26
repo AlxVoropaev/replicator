@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -112,78 +113,86 @@ struct Stats {
     std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>> top; // (count, bytes)
 };
 
-Stats compute_stats(const std::vector<std::vector<std::uint8_t>>& cells,
+Stats compute_stats(const std::uint8_t* bytes,
+                    std::size_t n,
+                    std::size_t tape_size,
                     std::size_t top_n,
                     std::size_t n_threads) {
-    // Use string_view keys pointing directly into each cell's bytes — caller
-    // guarantees `cells` is not mutated during the call, so the views are
-    // stable. Eliminates the per-cell std::string heap alloc that dominated
-    // wall-clock at pop>=10^6.
-    using Map = std::unordered_map<std::string_view, std::size_t>;
-    const std::size_t n = cells.size();
+    // Sort-based stats: build string_views into the (read-only) bytes buffer,
+    // sort, then walk to count consecutive equals. Faster than unordered_map
+    // at pop>=10^6 because it does no per-entry node allocation; std::sort is
+    // O(n log n) but with cheap 32-byte memcmp comparisons.
+    Stats st;
+    if (n == 0) return st;
+
+    std::vector<std::string_view> views(n);
     if (n_threads < 1) n_threads = 1;
     if (n_threads > n) n_threads = n;
 
     auto build_chunk = [&](std::size_t lo, std::size_t hi) {
-        Map m;
-        m.reserve((hi - lo) * 2);
         for (std::size_t i = lo; i < hi; ++i) {
-            const auto& c = cells[i];
-            std::string_view sv(reinterpret_cast<const char*>(c.data()), c.size());
-            ++m[sv];
+            views[i] = std::string_view(
+                reinterpret_cast<const char*>(bytes + i * tape_size), tape_size);
         }
-        return m;
     };
 
-    Map merged;
     if (n_threads <= 1) {
-        merged = build_chunk(0, n);
+        build_chunk(0, n);
     } else {
-        std::vector<Map> partials(n_threads);
         std::vector<std::thread> ts;
         ts.reserve(n_threads);
         const std::size_t chunk = (n + n_threads - 1) / n_threads;
         for (std::size_t t = 0; t < n_threads; ++t) {
             const std::size_t lo = t * chunk;
             const std::size_t hi = std::min(lo + chunk, n);
-            ts.emplace_back([&, t, lo, hi] {
-                if (lo < hi) partials[t] = build_chunk(lo, hi);
-            });
+            if (lo < hi) ts.emplace_back(build_chunk, lo, hi);
         }
         for (auto& th : ts) th.join();
-
-        // Merge into the largest partial to minimize rehashing.
-        std::size_t big = 0;
-        for (std::size_t t = 1; t < partials.size(); ++t) {
-            if (partials[t].size() > partials[big].size()) big = t;
-        }
-        merged = std::move(partials[big]);
-        merged.reserve(n);
-        for (std::size_t t = 0; t < partials.size(); ++t) {
-            if (t == big) continue;
-            for (auto& [k, v] : partials[t]) merged[k] += v;
-        }
     }
 
-    Stats st;
-    st.unique = merged.size();
+    std::sort(views.begin(), views.end());
+
+    // Walk runs of equal views, accumulating count + entropy. Keep only the
+    // top-N candidates via a min-heap to avoid materializing all uniques.
+    using Cand = std::pair<std::size_t, std::string_view>; // (count, key)
+    auto heap_cmp = [](const Cand& a, const Cand& b) { return a.first > b.first; };
+    std::vector<Cand> heap;
+    heap.reserve(top_n + 1);
+
     const double total = static_cast<double>(n);
-    for (const auto& [k, v] : merged) {
-        double p = static_cast<double>(v) / total;
-        st.entropy_bits -= p * std::log2(p);
+    std::size_t unique = 0;
+    double entropy = 0.0;
+    std::size_t i = 0;
+    while (i < n) {
+        std::size_t j = i + 1;
+        while (j < n && views[j] == views[i]) ++j;
+        const std::size_t cnt = j - i;
+        ++unique;
+        const double p = static_cast<double>(cnt) / total;
+        entropy -= p * std::log2(p);
+
+        if (top_n > 0) {
+            if (heap.size() < top_n) {
+                heap.emplace_back(cnt, views[i]);
+                std::push_heap(heap.begin(), heap.end(), heap_cmp);
+            } else if (cnt > heap.front().first) {
+                std::pop_heap(heap.begin(), heap.end(), heap_cmp);
+                heap.back() = {cnt, views[i]};
+                std::push_heap(heap.begin(), heap.end(), heap_cmp);
+            }
+        }
+        i = j;
     }
-    std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>> sorted;
-    sorted.reserve(merged.size());
-    for (auto& [k, v] : merged) {
-        sorted.emplace_back(v, std::vector<std::uint8_t>(k.begin(), k.end()));
+
+    std::sort(heap.begin(), heap.end(),
+              [](const Cand& a, const Cand& b) { return a.first > b.first; });
+
+    st.unique = unique;
+    st.entropy_bits = entropy;
+    st.top.reserve(heap.size());
+    for (auto& [cnt, sv] : heap) {
+        st.top.emplace_back(cnt, std::vector<std::uint8_t>(sv.begin(), sv.end()));
     }
-    std::partial_sort(
-        sorted.begin(),
-        sorted.begin() + std::min(top_n, sorted.size()),
-        sorted.end(),
-        [](const auto& a, const auto& b) { return a.first > b.first; });
-    sorted.resize(std::min(top_n, sorted.size()));
-    st.top = std::move(sorted);
     return st;
 }
 
@@ -192,7 +201,7 @@ void print_report(std::size_t step,
                   double steps_per_sec,
                   std::size_t ok_runs,
                   std::size_t total_runs,
-                  const std::vector<std::uint8_t>& cell0) {
+                  std::span<const std::uint8_t> cell0) {
     std::printf("\n=== step %zu  (unique=%zu  H=%.3f bits  speed=%.0f steps/s  done=%zu/%zu) ===\n",
                 step, st.unique, st.entropy_bits, steps_per_sec, ok_runs, total_runs);
     for (std::size_t i = 0; i < st.top.size(); ++i) {
@@ -201,7 +210,8 @@ void print_report(std::size_t step,
         std::printf("  %2zu) x%-4zu  %s\n", i + 1, cnt, bf_text_of(bytes).c_str());
     }
     if (!st.top.empty() && st.top.front().first == 1) {
-        std::printf("  c0) x1     %s\n", bf_text_of(cell0).c_str());
+        std::vector<std::uint8_t> c0(cell0.begin(), cell0.end());
+        std::printf("  c0) x1     %s\n", bf_text_of(c0).c_str());
     }
     std::fflush(stdout);
 }
@@ -233,7 +243,8 @@ int main(int argc, char** argv) {
         step += cfg.report_every;
         double dt = std::chrono::duration<double>(t_run1 - t_run0).count();
         double sps = dt > 0 ? static_cast<double>(cfg.report_every) / dt : 0.0;
-        auto st = compute_stats(soup.cells(), cfg.top_n, cfg.threads);
+        auto st = compute_stats(soup.bytes_data(), soup.population(), soup.tape_size(),
+                                cfg.top_n, cfg.threads);
         print_report(step, st, sps, ok, cfg.report_every, soup.cell(0));
     }
 
