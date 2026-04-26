@@ -15,6 +15,9 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#if defined(__GLIBCXX__)
+#include <parallel/algorithm>
+#endif
 
 namespace {
 
@@ -150,7 +153,15 @@ Stats compute_stats(const std::uint8_t* bytes,
         for (auto& th : ts) th.join();
     }
 
+#if defined(__GLIBCXX__)
+    if (n_threads > 1) {
+        __gnu_parallel::sort(views.begin(), views.end());
+    } else {
+        std::sort(views.begin(), views.end());
+    }
+#else
     std::sort(views.begin(), views.end());
+#endif
 
     // Walk runs of equal views, accumulating count + entropy. Keep only the
     // top-N candidates via a min-heap to avoid materializing all uniques.

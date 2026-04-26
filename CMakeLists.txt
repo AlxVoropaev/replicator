@@ -30,6 +30,13 @@ target_link_libraries(replicator_core PUBLIC Threads::Threads)
 add_executable(replicator src/main.cpp)
 target_link_libraries(replicator PRIVATE replicator_core)
 
+# OpenMP enables libstdc++'s __gnu_parallel::sort for compute_stats at large pop.
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_compile_definitions(replicator PRIVATE _GLIBCXX_PARALLEL)
+    target_link_libraries(replicator PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 enable_testing()
 include(FetchContent)
 FetchContent_Declare(
