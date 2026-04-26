@@ -21,7 +21,7 @@ std::atomic<bool> g_stop{false};
 void on_sigint(int) { g_stop = true; }
 
 struct Config {
-    std::size_t population = std::pow(2, 32);
+    std::size_t population = std::pow(2, 24);
     std::size_t tape_size = 32;
     std::size_t max_ops = 128;
     std::size_t report_every = 1000000;
@@ -85,13 +85,18 @@ bool parse_args(int argc, char** argv, Config& cfg) {
     return true;
 }
 
-std::string hex_of(const std::vector<std::uint8_t>& v) {
-    static constexpr char H[] = "0123456789abcdef";
+std::string bf_text_of(const std::vector<std::uint8_t>& v) {
     std::string s;
-    s.resize(v.size() * 2);
+    s.resize(v.size());
     for (std::size_t i = 0; i < v.size(); ++i) {
-        s[2 * i]     = H[v[i] >> 4];
-        s[2 * i + 1] = H[v[i] & 0xF];
+        switch (v[i]) {
+            case '+': case '-': case '>': case '<': case '[': case ']':
+                s[i] = static_cast<char>(v[i]);
+                break;
+            default:
+                s[i] = '.';
+                break;
+        }
     }
     return s;
 }
@@ -136,8 +141,8 @@ void print_report(std::size_t step, const Stats& st, double steps_per_sec) {
                 step, st.unique, st.entropy_bits, steps_per_sec);
     for (std::size_t i = 0; i < st.top.size(); ++i) {
         const auto& [cnt, bytes] = st.top[i];
-        if (cnt < 2) break; // singletons are not interesting
-        std::printf("  %2zu) x%-4zu  %s\n", i + 1, cnt, hex_of(bytes).c_str());
+        if (i > 0 && cnt < 2) break; // always show #1; skip the rest if singletons
+        std::printf("  %2zu) x%-4zu  %s\n", i + 1, cnt, bf_text_of(bytes).c_str());
     }
     std::fflush(stdout);
 }

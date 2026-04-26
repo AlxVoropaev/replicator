@@ -12,10 +12,11 @@ Soup::Soup(std::size_t population, std::size_t tape_size, std::uint64_t seed)
     if (tape_size == 0) {
         throw std::invalid_argument("tape_size must be > 0");
     }
-    std::uniform_int_distribution<int> byte_dist(0, 255);
+    static constexpr std::uint8_t bf_alphabet[] = {'+', '-', '>', '<', '[', ']', '.', ','};
+    std::uniform_int_distribution<int> sym_dist(0, sizeof(bf_alphabet) - 1);
     for (auto& c : cells_) {
         c.resize(tape_size);
-        for (auto& b : c) b = static_cast<std::uint8_t>(byte_dist(rng_));
+        for (auto& b : c) b = bf_alphabet[sym_dist(rng_)];
     }
 }
 
