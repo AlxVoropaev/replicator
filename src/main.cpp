@@ -212,18 +212,14 @@ int main(int argc, char** argv) {
     replicator::Soup soup(cfg.population, cfg.tape_size, cfg.seed);
 
     std::size_t step = 0;
-    auto t0 = std::chrono::steady_clock::now();
-    auto t_last = t0;
-    std::size_t last_step = 0;
 
     while (!g_stop.load()) {
+        auto t_run0 = std::chrono::steady_clock::now();
         soup.run_parallel(cfg.report_every, cfg.max_ops, cfg.threads, g_stop);
+        auto t_run1 = std::chrono::steady_clock::now();
         step += cfg.report_every;
-        auto now = std::chrono::steady_clock::now();
-        double dt = std::chrono::duration<double>(now - t_last).count();
-        double sps = dt > 0 ? static_cast<double>(step - last_step) / dt : 0.0;
-        t_last = now;
-        last_step = step;
+        double dt = std::chrono::duration<double>(t_run1 - t_run0).count();
+        double sps = dt > 0 ? static_cast<double>(cfg.report_every) / dt : 0.0;
         auto st = compute_stats(soup.cells(), cfg.top_n, cfg.threads);
         print_report(step, st, sps);
     }
