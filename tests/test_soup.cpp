@@ -1,4 +1,5 @@
 #include "soup.hpp"
+#include <atomic>
 #include <gtest/gtest.h>
 #include <set>
 
@@ -45,4 +46,24 @@ TEST(Soup, InitialPopulationHasDiversity) {
     std::set<std::vector<std::uint8_t>> uniq(snap.begin(), snap.end());
     // With 256*32 random bytes the chance of any duplicate is astronomically small.
     EXPECT_EQ(uniq.size(), 256u);
+}
+
+TEST(Soup, RunParallelPreservesShape) {
+    Soup s(64, 32, 11);
+    std::atomic<bool> stop{false};
+    s.run_parallel(2000, 64, 4, stop);
+    EXPECT_EQ(s.population(), 64u);
+    for (std::size_t i = 0; i < s.population(); ++i) {
+        EXPECT_EQ(s.cell(i).size(), 32u);
+    }
+}
+
+TEST(Soup, RunParallelSingleThreadMatchesRun) {
+    // n_threads <= 1 must behave exactly like run().
+    Soup a(32, 16, 99);
+    Soup b(32, 16, 99);
+    std::atomic<bool> stop{false};
+    a.run(300, 32);
+    b.run_parallel(300, 32, 1, stop);
+    EXPECT_EQ(a.snapshot(), b.snapshot());
 }

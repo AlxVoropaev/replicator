@@ -10,6 +10,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
@@ -26,6 +27,7 @@ struct Config {
     std::size_t max_ops = 128;
     std::size_t report_every = 1000000;
     std::size_t top_n = 10;
+    std::size_t threads = 1;
     std::uint64_t seed = std::random_device{}();
     bool seed_set = false;
 };
@@ -39,6 +41,7 @@ void usage(const char* argv0) {
         "  --max-ops N        per-step instruction cap (default: 128)\n"
         "  --report-every N   print stats every N steps (default: 1000)\n"
         "  --top-n N          how many top strings to print (default: 10)\n"
+        "  --threads N        worker threads for sim and stats (default: 1)\n"
         "  -h, --help         show this help\n",
         argv0);
 }
@@ -76,12 +79,14 @@ bool parse_args(int argc, char** argv, Config& cfg) {
         else if (a == "--max-ops")      { if (!need_val(cfg.max_ops))    return false; }
         else if (a == "--report-every") { if (!need_val(cfg.report_every)) return false; }
         else if (a == "--top-n")        { if (!need_val(cfg.top_n))      return false; }
+        else if (a == "--threads")      { if (!need_val(cfg.threads))    return false; }
         else if (a == "-h" || a == "--help") { usage(argv[0]); std::exit(0); }
         else {
             std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return false;
         }
     }
+    if (cfg.threads == 0) cfg.threads = 1;
     return true;
 }
 
@@ -107,23 +112,64 @@ struct Stats {
     std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>> top; // (count, bytes)
 };
 
-Stats compute_stats(const std::vector<std::vector<std::uint8_t>>& cells, std::size_t top_n) {
-    std::unordered_map<std::string, std::size_t> counts;
-    counts.reserve(cells.size() * 2);
-    for (const auto& c : cells) {
-        std::string k(c.begin(), c.end());
-        ++counts[k];
+Stats compute_stats(const std::vector<std::vector<std::uint8_t>>& cells,
+                    std::size_t top_n,
+                    std::size_t n_threads) {
+    using Map = std::unordered_map<std::string, std::size_t>;
+    const std::size_t n = cells.size();
+    if (n_threads < 1) n_threads = 1;
+    if (n_threads > n) n_threads = n;
+
+    auto build_chunk = [&](std::size_t lo, std::size_t hi) {
+        Map m;
+        m.reserve((hi - lo) * 2);
+        for (std::size_t i = lo; i < hi; ++i) {
+            const auto& c = cells[i];
+            ++m[std::string(c.begin(), c.end())];
+        }
+        return m;
+    };
+
+    Map merged;
+    if (n_threads <= 1) {
+        merged = build_chunk(0, n);
+    } else {
+        std::vector<Map> partials(n_threads);
+        std::vector<std::thread> ts;
+        ts.reserve(n_threads);
+        const std::size_t chunk = (n + n_threads - 1) / n_threads;
+        for (std::size_t t = 0; t < n_threads; ++t) {
+            const std::size_t lo = t * chunk;
+            const std::size_t hi = std::min(lo + chunk, n);
+            ts.emplace_back([&, t, lo, hi] {
+                if (lo < hi) partials[t] = build_chunk(lo, hi);
+            });
+        }
+        for (auto& th : ts) th.join();
+
+        // Merge into the largest partial to minimize rehashing.
+        std::size_t big = 0;
+        for (std::size_t t = 1; t < partials.size(); ++t) {
+            if (partials[t].size() > partials[big].size()) big = t;
+        }
+        merged = std::move(partials[big]);
+        merged.reserve(n);
+        for (std::size_t t = 0; t < partials.size(); ++t) {
+            if (t == big) continue;
+            for (auto& [k, v] : partials[t]) merged[k] += v;
+        }
     }
+
     Stats st;
-    st.unique = counts.size();
-    const double n = static_cast<double>(cells.size());
-    for (const auto& [k, v] : counts) {
-        double p = static_cast<double>(v) / n;
+    st.unique = merged.size();
+    const double total = static_cast<double>(n);
+    for (const auto& [k, v] : merged) {
+        double p = static_cast<double>(v) / total;
         st.entropy_bits -= p * std::log2(p);
     }
     std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>> sorted;
-    sorted.reserve(counts.size());
-    for (auto& [k, v] : counts) {
+    sorted.reserve(merged.size());
+    for (auto& [k, v] : merged) {
         sorted.emplace_back(v, std::vector<std::uint8_t>(k.begin(), k.end()));
     }
     std::partial_sort(
@@ -158,8 +204,8 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, on_sigint);
 
-    std::printf("replicator: pop=%zu tape=%zu max_ops=%zu report=%zu seed=%llu\n",
-                cfg.population, cfg.tape_size, cfg.max_ops, cfg.report_every,
+    std::printf("replicator: pop=%zu tape=%zu max_ops=%zu report=%zu threads=%zu seed=%llu\n",
+                cfg.population, cfg.tape_size, cfg.max_ops, cfg.report_every, cfg.threads,
                 static_cast<unsigned long long>(cfg.seed));
     std::fflush(stdout);
 
@@ -171,16 +217,14 @@ int main(int argc, char** argv) {
     std::size_t last_step = 0;
 
     while (!g_stop.load()) {
-        for (std::size_t k = 0; k < cfg.report_every && !g_stop.load(); ++k) {
-            soup.step(cfg.max_ops);
-            ++step;
-        }
+        soup.run_parallel(cfg.report_every, cfg.max_ops, cfg.threads, g_stop);
+        step += cfg.report_every;
         auto now = std::chrono::steady_clock::now();
         double dt = std::chrono::duration<double>(now - t_last).count();
         double sps = dt > 0 ? static_cast<double>(step - last_step) / dt : 0.0;
         t_last = now;
         last_step = step;
-        auto st = compute_stats(soup.snapshot(), cfg.top_n);
+        auto st = compute_stats(soup.cells(), cfg.top_n, cfg.threads);
         print_report(step, st, sps);
     }
 

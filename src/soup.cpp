@@ -1,6 +1,8 @@
 #include "soup.hpp"
 #include "bf.hpp"
+#include <algorithm>
 #include <stdexcept>
+#include <thread>
 
 namespace replicator {
 
@@ -43,6 +45,76 @@ void Soup::step(std::size_t max_ops) {
 
 void Soup::run(std::size_t n_steps, std::size_t max_ops) {
     for (std::size_t k = 0; k < n_steps; ++k) step(max_ops);
+}
+
+void Soup::run_parallel(std::size_t n_steps,
+                        std::size_t max_ops,
+                        std::size_t n_threads,
+                        const std::atomic<bool>& stop) {
+    if (n_threads <= 1) {
+        for (std::size_t k = 0; k < n_steps && !stop.load(std::memory_order_relaxed); ++k) {
+            step(max_ops);
+        }
+        return;
+    }
+
+    const std::size_t pop = cells_.size();
+    std::vector<std::atomic<std::uint8_t>> busy(pop);
+    for (auto& b : busy) b.store(0, std::memory_order_relaxed);
+
+    std::atomic<std::size_t> done{0};
+
+    std::vector<std::uint64_t> seeds(n_threads);
+    for (auto& s : seeds) s = rng_();
+
+    auto worker = [&](std::uint64_t seed) {
+        std::mt19937_64 rng(seed);
+        std::uniform_int_distribution<std::size_t> d(0, pop - 1);
+        std::uniform_int_distribution<std::size_t> d2(0, pop - 2);
+        std::vector<std::uint8_t> tape(2 * tape_size_);
+
+        while (!stop.load(std::memory_order_relaxed)) {
+            const std::size_t cur = done.fetch_add(1, std::memory_order_relaxed);
+            if (cur >= n_steps) break;
+
+            // Try to claim two distinct cells. Lower index first to keep
+            // an arbitrary (but consistent) acquisition order.
+            for (;;) {
+                std::size_t i = d(rng);
+                std::size_t j = d2(rng);
+                if (j >= i) ++j;
+                std::size_t lo = i, hi = j;
+                if (lo > hi) std::swap(lo, hi);
+
+                std::uint8_t expected = 0;
+                if (!busy[lo].compare_exchange_strong(
+                        expected, 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+                    continue;
+                }
+                expected = 0;
+                if (!busy[hi].compare_exchange_strong(
+                        expected, 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+                    busy[lo].store(0, std::memory_order_release);
+                    continue;
+                }
+
+                std::copy(cells_[i].begin(), cells_[i].end(), tape.begin());
+                std::copy(cells_[j].begin(), cells_[j].end(), tape.begin() + tape_size_);
+                run_bf(std::span<std::uint8_t>(tape), max_ops);
+                std::copy(tape.begin(), tape.begin() + tape_size_, cells_[i].begin());
+                std::copy(tape.begin() + tape_size_, tape.end(), cells_[j].begin());
+
+                busy[hi].store(0, std::memory_order_release);
+                busy[lo].store(0, std::memory_order_release);
+                break;
+            }
+        }
+    };
+
+    std::vector<std::thread> ts;
+    ts.reserve(n_threads);
+    for (std::size_t t = 0; t < n_threads; ++t) ts.emplace_back(worker, seeds[t]);
+    for (auto& th : ts) th.join();
 }
 
 } // namespace replicator
