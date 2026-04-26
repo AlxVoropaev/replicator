@@ -7,6 +7,23 @@
 
 namespace replicator {
 
+namespace {
+constexpr std::uint8_t kBfAlphabet[8] = {'+', '-', '>', '<', '[', ']', '.', ','};
+constexpr std::size_t kMutationDenom = 10000;
+
+inline void maybe_mutate(std::uint8_t* tape, std::size_t n, std::mt19937_64& rng) {
+    std::uniform_int_distribution<std::size_t> chance(0, kMutationDenom - 1);
+    if (chance(rng) != 0) return;
+    std::uniform_int_distribution<std::size_t> pos_dist(0, n - 1);
+    std::uniform_int_distribution<int> sym_dist(0, 7);
+    const std::size_t pos = pos_dist(rng);
+    const std::uint8_t prev = tape[pos];
+    std::uint8_t next;
+    do { next = kBfAlphabet[sym_dist(rng)]; } while (next == prev);
+    tape[pos] = next;
+}
+} // namespace
+
 Soup::Soup(std::size_t population, std::size_t tape_size, std::uint64_t seed)
     : population_(population), tape_size_(tape_size),
       bytes_(population * tape_size), rng_(seed) {
@@ -16,9 +33,8 @@ Soup::Soup(std::size_t population, std::size_t tape_size, std::uint64_t seed)
     if (tape_size == 0) {
         throw std::invalid_argument("tape_size must be > 0");
     }
-    static constexpr std::uint8_t bf_alphabet[] = {'+', '-', '>', '<', '[', ']', '.', ','};
-    std::uniform_int_distribution<int> sym_dist(0, sizeof(bf_alphabet) - 1);
-    for (auto& b : bytes_) b = bf_alphabet[sym_dist(rng_)];
+    std::uniform_int_distribution<int> sym_dist(0, sizeof(kBfAlphabet) - 1);
+    for (auto& b : bytes_) b = kBfAlphabet[sym_dist(rng_)];
 }
 
 std::pair<std::size_t, std::size_t> Soup::pick_pair() {
@@ -41,6 +57,7 @@ bool Soup::step(std::size_t max_ops) {
     std::memcpy(tape.data(),                base + i * tape_size_, tape_size_);
     std::memcpy(tape.data() + tape_size_,   base + j * tape_size_, tape_size_);
     const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
+    maybe_mutate(tape.data(), 2 * tape_size_, rng_);
     std::memcpy(base + i * tape_size_, tape.data(),              tape_size_);
     std::memcpy(base + j * tape_size_, tape.data() + tape_size_, tape_size_);
     return ops < max_ops;
@@ -121,6 +138,7 @@ std::size_t Soup::run_parallel(std::size_t n_steps,
                 std::memcpy(tape.data(),             base + i * ts_local, ts_local);
                 std::memcpy(tape.data() + ts_local,  base + j * ts_local, ts_local);
                 const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
+                maybe_mutate(tape.data(), 2 * ts_local, rng);
                 std::memcpy(base + i * ts_local, tape.data(),            ts_local);
                 std::memcpy(base + j * ts_local, tape.data() + ts_local, ts_local);
                 if (ops < max_ops) ++local_ok;

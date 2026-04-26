@@ -49,6 +49,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(unit_tests
     tests/test_bf.cpp
+    tests/test_bf_compare.cpp
     tests/test_soup.cpp
 )
 target_link_libraries(unit_tests PRIVATE replicator_core GTest::gtest_main)

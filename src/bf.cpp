@@ -67,7 +67,10 @@ op_minus:
 
 op_open: {
     const int match = jumps[ip];
-    if (tape[dp] == 0 && match >= 0) {
+    // Validate the partner byte is still ']': if it was overwritten by
+    // self-modification, treat this bracket as unmatched (matches live
+    // bracket-matching semantics).
+    if (tape[dp] == 0 && match >= 0 && tape[match] == ']') {
         ip = static_cast<std::size_t>(match) + 1;
     } else {
         ++ip;
@@ -77,7 +80,7 @@ op_open: {
 
 op_close: {
     const int match = jumps[ip];
-    if (tape[dp] != 0 && match >= 0) {
+    if (tape[dp] != 0 && match >= 0 && tape[match] == '[') {
         ip = static_cast<std::size_t>(match) + 1;
     } else {
         ++ip;
@@ -109,12 +112,14 @@ done:
             case '-': --tape[dp]; ++ip; break;
             case '[': {
                 const int match = jumps[ip];
-                ip = (tape[dp] == 0 && match >= 0) ? static_cast<std::size_t>(match) + 1 : ip + 1;
+                ip = (tape[dp] == 0 && match >= 0 && tape[match] == ']')
+                     ? static_cast<std::size_t>(match) + 1 : ip + 1;
                 break;
             }
             case ']': {
                 const int match = jumps[ip];
-                ip = (tape[dp] != 0 && match >= 0) ? static_cast<std::size_t>(match) + 1 : ip + 1;
+                ip = (tape[dp] != 0 && match >= 0 && tape[match] == '[')
+                     ? static_cast<std::size_t>(match) + 1 : ip + 1;
                 break;
             }
             default: ++ip; break;

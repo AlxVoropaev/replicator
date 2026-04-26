@@ -160,10 +160,20 @@ the `usage()` string. Keep defaults sane — the program runs with no flags.
 - Commits follow a "Milestone N: <one-line>" pattern from the initial build.
   After milestones, just describe the change normally.
 
+## Mutation
+
+Per-step random mutation is enabled. After each `run_bf` call (in both `step`
+and the parallel worker), with probability 1/10000 one byte of the 2-cell tape
+is replaced with a different symbol from the 8-char BF alphabet
+(`+ - > < [ ] . ,`). Implemented in `maybe_mutate` in `soup.cpp`. Rate is
+hardcoded; if the user asks to change/disable it, edit `kMutationDenom`
+or expose a CLI flag.
+
 ## Things to ask the user before doing
 
 - Changing interpreter semantics (would invalidate published runs).
-- Adding background mutation — the user explicitly said no mutation.
+- Changing the mutation model (rate, alphabet, per-byte vs per-step,
+  pre- vs post-`run_bf`) — discuss before altering.
 - Splitting source into more files / introducing new abstractions — the
   user prefers minimum code (see "Simplicity First" above).
 - Pushing a non-trivial change to `main` without local test pass.

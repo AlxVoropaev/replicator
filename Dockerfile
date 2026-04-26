@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libstdc++6 \
+        libstdc++6 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /src/build/replicator /usr/local/bin/replicator
 ENTRYPOINT ["/usr/local/bin/replicator"]

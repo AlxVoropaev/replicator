@@ -27,11 +27,11 @@ void on_sigint(int) { g_stop = true; }
 
 struct Config {
     std::size_t population = std::pow(2, 24);
-    std::size_t tape_size = 32;
-    std::size_t max_ops = 128;
+    std::size_t tape_size = 64;
+    std::size_t max_ops = 512;
     std::size_t report_every = 1000000;
     std::size_t top_n = 10;
-    std::size_t threads = 1;
+    std::size_t threads = 16;
     std::uint64_t seed = std::random_device{}();
     bool seed_set = false;
 };
@@ -207,14 +207,34 @@ Stats compute_stats(const std::uint8_t* bytes,
     return st;
 }
 
+std::string human_count(double n) {
+    static const char* suffixes[] = {"", "K", "M", "G", "T", "P", "E"};
+    int idx = 0;
+    while (n >= 1000.0 && idx < 6) {
+        n /= 1000.0;
+        ++idx;
+    }
+    char buf[32];
+    if (idx == 0)            std::snprintf(buf, sizeof(buf), "%.0f",   n);
+    else if (n < 10.0)       std::snprintf(buf, sizeof(buf), "%.2f%s", n, suffixes[idx]);
+    else if (n < 100.0)      std::snprintf(buf, sizeof(buf), "%.1f%s", n, suffixes[idx]);
+    else                     std::snprintf(buf, sizeof(buf), "%.0f%s", n, suffixes[idx]);
+    return buf;
+}
+
 void print_report(std::size_t step,
                   const Stats& st,
                   double steps_per_sec,
                   std::size_t ok_runs,
                   std::size_t total_runs,
                   std::span<const std::uint8_t> cell0) {
-    std::printf("\n=== step %zu  (unique=%zu  H=%.3f bits  speed=%.0f steps/s  done=%zu/%zu) ===\n",
-                step, st.unique, st.entropy_bits, steps_per_sec, ok_runs, total_runs);
+    std::printf("\n=== step %s  (unique=%s  H=%.3f bits  speed=%s steps/s  done=%s/%s) ===\n",
+                human_count(static_cast<double>(step)).c_str(),
+                human_count(static_cast<double>(st.unique)).c_str(),
+                st.entropy_bits,
+                human_count(steps_per_sec).c_str(),
+                human_count(static_cast<double>(ok_runs)).c_str(),
+                human_count(static_cast<double>(total_runs)).c_str());
     for (std::size_t i = 0; i < st.top.size(); ++i) {
         const auto& [cnt, bytes] = st.top[i];
         if (i > 0 && cnt < 2) break; // always show #1; skip the rest if singletons
@@ -259,6 +279,6 @@ int main(int argc, char** argv) {
         print_report(step, st, sps, ok, cfg.report_every, soup.cell(0));
     }
 
-    std::printf("\nstopped after %zu steps\n", step);
+    std::printf("\nstopped after %s steps\n", human_count(static_cast<double>(step)).c_str());
     return 0;
 }
