@@ -70,9 +70,15 @@ TEST(Bf, CloseBracketJumpsBackWhenNonZero) {
 
 // Unmatched brackets are no-ops; no crash.
 TEST(Bf, UnmatchedBracketsAreNoops) {
-    Tape t{'[', '+', ']', '+'};
+    // No ']' anywhere -> '[' is unmatched and acts as no-op.
+    Tape t{'[', '+', '+', 0};
     EXPECT_NO_THROW(run_bf(std::span<std::uint8_t>(t), 16));
     EXPECT_EQ(t[0], static_cast<std::uint8_t>('[') + 2);
+
+    // No '[' anywhere -> ']' is unmatched and acts as no-op.
+    Tape u{']', '+', '+', 0};
+    EXPECT_NO_THROW(run_bf(std::span<std::uint8_t>(u), 16));
+    EXPECT_EQ(u[0], static_cast<std::uint8_t>(']') + 2);
 }
 
 // Infinite loop is bounded by max_ops.
