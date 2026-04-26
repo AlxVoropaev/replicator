@@ -2,15 +2,18 @@
 
 FROM gcc:15 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake ninja-build ca-certificates \
+        cmake ninja-build ca-certificates ccache \
     && rm -rf /var/lib/apt/lists/*
+ENV CCACHE_DIR=/root/.ccache
 WORKDIR /src
 COPY CMakeLists.txt ./
 COPY src ./src
 COPY tests ./tests
-RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+RUN --mount=type=cache,target=/root/.ccache \
+    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
  && cmake --build build --parallel \
- && ctest --test-dir build --output-on-failure
+ && ctest --test-dir build --output-on-failure \
+ && ccache --show-stats
 
 FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
