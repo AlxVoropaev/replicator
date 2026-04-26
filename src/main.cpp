@@ -115,7 +115,11 @@ struct Stats {
 Stats compute_stats(const std::vector<std::vector<std::uint8_t>>& cells,
                     std::size_t top_n,
                     std::size_t n_threads) {
-    using Map = std::unordered_map<std::string, std::size_t>;
+    // Use string_view keys pointing directly into each cell's bytes — caller
+    // guarantees `cells` is not mutated during the call, so the views are
+    // stable. Eliminates the per-cell std::string heap alloc that dominated
+    // wall-clock at pop>=10^6.
+    using Map = std::unordered_map<std::string_view, std::size_t>;
     const std::size_t n = cells.size();
     if (n_threads < 1) n_threads = 1;
     if (n_threads > n) n_threads = n;
@@ -125,7 +129,8 @@ Stats compute_stats(const std::vector<std::vector<std::uint8_t>>& cells,
         m.reserve((hi - lo) * 2);
         for (std::size_t i = lo; i < hi; ++i) {
             const auto& c = cells[i];
-            ++m[std::string(c.begin(), c.end())];
+            std::string_view sv(reinterpret_cast<const char*>(c.data()), c.size());
+            ++m[sv];
         }
         return m;
     };

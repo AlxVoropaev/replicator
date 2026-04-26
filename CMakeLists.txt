@@ -15,7 +15,7 @@ if(CCACHE_PROGRAM)
     message(STATUS "ccache enabled: ${CCACHE_PROGRAM}")
 endif()
 
-add_compile_options(-Wall -Wextra -Wpedantic -O3)
+add_compile_options(-Wall -Wextra -Wpedantic -O3 -march=native)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)

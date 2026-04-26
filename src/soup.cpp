@@ -35,7 +35,10 @@ std::pair<std::size_t, std::size_t> Soup::pick_pair() {
 
 bool Soup::step(std::size_t max_ops) {
     auto [i, j] = pick_pair();
-    std::vector<std::uint8_t> tape(2 * tape_size_);
+    // Thread-local scratch tape reused across calls; avoids ~1.4M heap
+    // allocations/sec at the previous hot path.
+    thread_local std::vector<std::uint8_t> tape;
+    tape.resize(2 * tape_size_);
     std::copy(cells_[i].begin(), cells_[i].end(), tape.begin());
     std::copy(cells_[j].begin(), cells_[j].end(), tape.begin() + tape_size_);
     const std::size_t ops = run_bf(std::span<std::uint8_t>(tape), max_ops);
@@ -72,16 +75,26 @@ std::size_t Soup::run_parallel(std::size_t n_steps,
     std::vector<std::uint64_t> seeds(n_threads);
     for (auto& s : seeds) s = rng_();
 
+    // Claim work in batches to amortize the cost of the shared `done` atomic
+    // across many steps. Without this, every step takes a global atomic and
+    // multi-thread scaling stalls well below the available cores.
+    constexpr std::size_t kBatch = 1024;
+
     auto worker = [&](std::uint64_t seed) {
         std::mt19937_64 rng(seed);
         std::uniform_int_distribution<std::size_t> d(0, pop - 1);
         std::uniform_int_distribution<std::size_t> d2(0, pop - 2);
         std::vector<std::uint8_t> tape(2 * tape_size_);
         std::size_t local_ok = 0;
+        std::size_t batch_left = 0;
 
         while (!stop.load(std::memory_order_relaxed)) {
-            const std::size_t cur = done.fetch_add(1, std::memory_order_relaxed);
-            if (cur >= n_steps) break;
+            if (batch_left == 0) {
+                const std::size_t cur = done.fetch_add(kBatch, std::memory_order_relaxed);
+                if (cur >= n_steps) break;
+                batch_left = (cur + kBatch <= n_steps) ? kBatch : (n_steps - cur);
+            }
+            --batch_left;
 
             // Try to claim two distinct cells. Lower index first to keep
             // an arbitrary (but consistent) acquisition order.
