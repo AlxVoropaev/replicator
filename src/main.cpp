@@ -21,10 +21,10 @@ std::atomic<bool> g_stop{false};
 void on_sigint(int) { g_stop = true; }
 
 struct Config {
-    std::size_t population = 256;
+    std::size_t population = std::pow(2, 32);
     std::size_t tape_size = 32;
     std::size_t max_ops = 128;
-    std::size_t report_every = 1000;
+    std::size_t report_every = 1000000;
     std::size_t top_n = 10;
     std::uint64_t seed = std::random_device{}();
     bool seed_set = false;
